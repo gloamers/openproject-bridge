@@ -1,0 +1,215 @@
+name: CI
+
+# CI for openproject-bridge:
+# - Go 1.26 (matches go.mod)
+# - Unit tests on Linux / macOS / Windows
+# - Integration against OpenProject Docker (Ubuntu only)
+#
+# Branch strategy (GitHub Flow):
+# - main: production-ready
+# - feature branches: tested via pull_request
+
+env:
+  CGO_ENABLED: "0"
+  GO_VERSION: "1.26.5"
+  GOTOOLCHAIN: "go1.26.5"
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build - ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Verify dependencies
+        run: go mod verify
+
+      - name: Build packages
+        run: go build ./cmd/... ./internal/...
+
+      - name: Build binaries
+        shell: bash
+        run: |
+          mkdir -p bin
+          go build -trimpath -ldflags="-w -s" -o bin/op-bridge ./cmd/op-bridge
+          go build -trimpath -ldflags="-w -s" -o bin/op-bootstrap ./cmd/op-bootstrap
+          go build -trimpath -ldflags="-w -s" -o bin/op-document ./cmd/op-document
+
+  test:
+    name: Test - ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Run go vet
+        if: matrix.os == 'ubuntu-latest'
+        run: go vet ./cmd/... ./internal/...
+
+      - name: Run unit tests with race detector
+        if: matrix.os != 'windows-latest'
+        run: go test -race -count=1 -coverprofile=coverage.txt -covermode=atomic ./cmd/... ./internal/...
+
+      - name: Run unit tests (Windows, no race)
+        if: matrix.os == 'windows-latest'
+        run: go test -count=1 ./cmd/... ./internal/...
+
+      - name: Upload coverage to Codecov
+        if: matrix.os == 'ubuntu-latest'
+        uses: codecov/codecov-action@v5
+        with:
+          use_oidc: true
+          files: ./coverage.txt
+          flags: unittests
+          name: codecov-openproject-bridge
+          fail_ci_if_error: false
+
+  integration:
+    name: Integration (OpenProject Docker)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Integration tests
+        env:
+          OPENPROJECT_BRIDGE_ITEST_DOCKER: "1"
+          OPENPROJECT_BRIDGE_ITEST_CREATE_API_KEY: "1"
+        run: go test -tags=integration -count=1 -timeout=30m -v ./tests/
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: latest
+          args: --timeout=5m ./cmd/... ./internal/...
+
+  formatting:
+    name: Formatting
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Check formatting
+        run: |
+          if [ -n "$(gofmt -l cmd internal tests)" ]; then
+            echo "ERROR: The following files are not formatted:"
+            gofmt -l cmd internal tests
+            echo ""
+            echo "Run 'task fmt' to fix formatting issues."
+            exit 1
+          fi
+          echo "All project files are properly formatted"
+
+  deps:
+    name: Dependencies
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Install go-mod-outdated
+        run: go install github.com/psampaz/go-mod-outdated@latest
+
+      - name: Check direct dependencies for updates
+        run: |
+          echo "## Direct Dependencies with Available Updates"
+          OUTDATED=$(go list -u -m -json all 2>/dev/null | go-mod-outdated -update -direct || true)
+          if [ -n "$OUTDATED" ]; then
+            echo "$OUTDATED"
+            echo ""
+            echo "::warning::Some direct dependencies have updates available"
+          else
+            echo "All direct dependencies are up to date!"
+          fi
+
+      - name: Verify go.mod is tidy
+        run: |
+          go mod tidy
+          if ! git diff --exit-code go.mod go.sum; then
+            echo "::error::go.mod/go.sum are not tidy — run 'task tidy' and commit"
+            exit 1
+          fi

@@ -1,0 +1,298 @@
+version: "3"
+
+vars:
+  GO_PACKAGES: ./cmd/... ./internal/...
+  GOTOOLCHAIN: '{{.GOTOOLCHAIN | default "go1.26.5"}}'
+  REQUIRED_GO: go1.26
+  KEYCHAIN_PREFIX: '{{.OPBRIDGE_KEYCHAIN_PREFIX | default "opbridge"}}'
+  # Shared Keychain / secret-tool helpers for run:* tasks (macOS + Linux).
+  KEYCHAIN_HELPERS: |
+    keychain_get() {
+      local service="$1"
+      if command -v security >/dev/null 2>&1; then
+        security find-generic-password -a "${USER}" -s "$service" -w 2>/dev/null || true
+      elif command -v secret-tool >/dev/null 2>&1; then
+        local key="${service#"{{.KEYCHAIN_PREFIX}}"-}"
+        secret-tool lookup service opbridge key "$key" 2>/dev/null || true
+      fi
+    }
+    load_if_empty() {
+      local env_name="$1"
+      local service="$2"
+      local file_env="${env_name}_FILE"
+      if [[ -n "${!env_name:-}" || -n "${!file_env:-}" ]]; then
+        return 0
+      fi
+      local val
+      val="$(keychain_get "$service")"
+      if [[ -n "$val" ]]; then
+        export "$env_name=$val"
+      fi
+    }
+
+env:
+  GOTOOLCHAIN: '{{.GOTOOLCHAIN}}'
+
+tasks:
+  default:
+    desc: Show available tasks
+    cmds:
+      - task --list
+
+  build:
+    desc: Build op-bridge, op-bootstrap, op-document into bin/
+    sources:
+      - cmd/**/*.go
+      - internal/**/*.go
+      - go.mod
+      - go.sum
+    generates:
+      - bin/op-bridge
+      - bin/op-bootstrap
+      - bin/op-document
+    cmds:
+      - mkdir -p bin
+      - go build -trimpath -ldflags="-w -s" -o bin/op-bridge ./cmd/op-bridge
+      - go build -trimpath -ldflags="-w -s" -o bin/op-bootstrap ./cmd/op-bootstrap
+      - go build -trimpath -ldflags="-w -s" -o bin/op-document ./cmd/op-document
+
+  fmt:
+    desc: Format Go sources
+    cmds:
+      - gofmt -w cmd internal tests
+
+  tidy:
+    desc: go mod tidy
+    cmds:
+      - go mod tidy
+
+  test:
+    desc: Unit tests (cmd + internal)
+    cmds:
+      - go test {{.GO_PACKAGES}}
+
+  test:race:
+    desc: Unit tests with race detector and coverage
+    cmds:
+      - go test -race -count=1 -coverprofile=coverage.txt -covermode=atomic {{.GO_PACKAGES}}
+
+  test:integration:
+    desc: Docker OpenProject integration tests in ./tests/
+    cmds:
+      - >
+        OPENPROJECT_BRIDGE_ITEST_DOCKER=1
+        OPENPROJECT_BRIDGE_ITEST_CREATE_API_KEY=1
+        go test -tags=integration -count=1 -timeout=20m -v ./tests/
+
+  vet:
+    desc: go vet
+    cmds:
+      - go vet {{.GO_PACKAGES}}
+
+  lint:
+    desc: golangci-lint
+    cmds:
+      - golangci-lint run --timeout=5m {{.GO_PACKAGES}}
+
+  # --- Pre-release checks (formerly scripts/pre-release-check.sh) ---
+
+  check:go-version:
+    desc: Require Go {{.REQUIRED_GO}}+
+    internal: true
+    cmds:
+      - |
+        set -euo pipefail
+        GO_VERSION=$(go version | awk '{print $3}')
+        if [[ "$GO_VERSION" < "{{.REQUIRED_GO}}" ]]; then
+          echo "ERROR: Go {{.REQUIRED_GO}}+ required, found $GO_VERSION" >&2
+          exit 1
+        fi
+        echo "Go version: $GO_VERSION"
+
+  check:git:
+    desc: Warn on dirty git tree (non-fatal)
+    internal: true
+    cmds:
+      - |
+        set -euo pipefail
+        if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+          if git diff-index --quiet HEAD -- 2>/dev/null; then
+            echo "Working directory is clean"
+          else
+            echo "WARNING: Uncommitted changes detected"
+            git status --short || true
+          fi
+        else
+          echo "WARNING: Not a git repository — skipping dirty-tree check"
+        fi
+
+  check:fmt:
+    desc: Fail if sources need gofmt
+    internal: true
+    cmds:
+      - |
+        set -euo pipefail
+        UNFORMATTED=$(gofmt -l cmd internal tests)
+        if [[ -n "$UNFORMATTED" ]]; then
+          echo "ERROR: The following files need formatting:" >&2
+          echo "$UNFORMATTED" >&2
+          echo "Run: task fmt" >&2
+          exit 1
+        fi
+        echo "All project files are properly formatted"
+
+  check:mod:
+    desc: Verify go.mod and that tidy is a no-op
+    internal: true
+    cmds:
+      - go mod verify
+      - |
+        set -euo pipefail
+        MOD_BACKUP=$(mktemp)
+        SUM_BACKUP=$(mktemp)
+        cp go.mod "$MOD_BACKUP"
+        cp go.sum "$SUM_BACKUP"
+        go mod tidy
+        ok=1
+        if ! diff -q go.mod "$MOD_BACKUP" >/dev/null || ! diff -q go.sum "$SUM_BACKUP" >/dev/null; then
+          echo "ERROR: go.mod/go.sum are not tidy — run: task tidy" >&2
+          diff -u "$MOD_BACKUP" go.mod || true
+          ok=0
+        fi
+        cp "$MOD_BACKUP" go.mod
+        cp "$SUM_BACKUP" go.sum
+        rm -f "$MOD_BACKUP" "$SUM_BACKUP"
+        if [[ "$ok" -ne 1 ]]; then
+          exit 1
+        fi
+        echo "go.mod is tidy"
+
+  check:lint-config:
+    desc: Verify golangci-lint config
+    internal: true
+    cmds:
+      - |
+        set -euo pipefail
+        if ! command -v golangci-lint >/dev/null 2>&1; then
+          echo "ERROR: golangci-lint not installed — https://golangci-lint.run/welcome/install/" >&2
+          exit 1
+        fi
+        if [[ ! -f .golangci.yml ]]; then
+          echo "ERROR: .golangci.yml missing" >&2
+          exit 1
+        fi
+        golangci-lint config verify
+        echo "golangci-lint config is valid"
+
+  check:docs:
+    desc: Required docs / Taskfile present
+    internal: true
+    cmds:
+      - |
+        set -euo pipefail
+        missing=0
+        for doc in README.md README.ru.md LICENSE Taskfile.yml CONTRIBUTING.md SECURITY.md CODE_OF_CONDUCT.md CHANGELOG.md; do
+          if [[ ! -f "$doc" ]]; then
+            echo "ERROR: Missing: $doc" >&2
+            missing=1
+          fi
+        done
+        if [[ "$missing" -ne 0 ]]; then
+          exit 1
+        fi
+        echo "Required documentation / Taskfile present"
+
+  check:docker:
+    desc: Ensure Docker is available for integration tests
+    internal: true
+    cmds:
+      - |
+        set -euo pipefail
+        if ! command -v docker >/dev/null 2>&1; then
+          echo "ERROR: docker not installed — cannot run integration tests" >&2
+          echo "Install Docker or run: task check:no-integration" >&2
+          exit 1
+        fi
+        if ! docker info >/dev/null 2>&1; then
+          echo "ERROR: docker daemon not available" >&2
+          exit 1
+        fi
+
+  check:quick:
+    desc: Fast pre-release (fmt, vet, build, unit — no race/lint/integration)
+    cmds:
+      - task: check:go-version
+      - task: check:git
+      - task: check:fmt
+      - task: vet
+      - task: build
+      - task: check:mod
+      - task: test
+      - task: check:docs
+      - echo "check:quick OK"
+
+  check:no-integration:
+    desc: Full unit/lint without Docker
+    cmds:
+      - task: check:go-version
+      - task: check:git
+      - task: check:fmt
+      - task: vet
+      - task: build
+      - task: check:mod
+      - task: check:lint-config
+      - task: test:race
+      - task: lint
+      - task: check:docs
+      - echo "check:no-integration OK"
+
+  check:
+    desc: Full pre-release (race, lint, Docker integration)
+    cmds:
+      - task: check:no-integration
+      - task: check:docker
+      - task: test:integration
+      - echo "check OK — ready for release"
+
+  # --- Keychain launchers (formerly scripts/op*-from-keychain.sh) ---
+
+  run:bridge:
+    desc: Run op-bridge with secrets from Keychain / secret-tool (pass CLI args after --)
+    deps: [build]
+    cmds:
+      - |
+        set -euo pipefail
+        PREFIX="{{.KEYCHAIN_PREFIX}}"
+        BIN="${OPBRIDGE_BIN:-bin/op-bridge}"
+        if [[ ! -x "$BIN" ]]; then
+          echo "op-bridge binary not found at $BIN — run: task build" >&2
+          exit 1
+        fi
+        {{.KEYCHAIN_HELPERS}}
+        load_if_empty GITHUB_WEBHOOK_SECRET "${PREFIX}-github-webhook-secret"
+        load_if_empty GITHUB_TOKEN "${PREFIX}-github-token"
+        load_if_empty OPENPROJECT_ACME_API_KEY "${PREFIX}-openproject-acme-api-key"
+        load_if_empty OPENPROJECT_GLOBEX_API_KEY "${PREFIX}-openproject-globex-api-key"
+        load_if_empty OPENPROJECT_CLIENT_X_API_KEY "${PREFIX}-openproject-client-x-api-key"
+        load_if_empty GITHUB_WEBHOOK_SECRET_ACME "${PREFIX}-github-webhook-secret-acme"
+        load_if_empty GITHUB_WEBHOOK_SECRET_GLOBEX "${PREFIX}-github-webhook-secret-globex"
+        load_if_empty GITHUB_WEBHOOK_SECRET_CLIENT_X "${PREFIX}-github-webhook-secret-client-x"
+        exec "$BIN" {{.CLI_ARGS}}
+
+  run:bootstrap:
+    desc: Run op-bootstrap with API keys from Keychain / secret-tool
+    deps: [build]
+    cmds:
+      - |
+        set -euo pipefail
+        PREFIX="{{.KEYCHAIN_PREFIX}}"
+        BIN="${OPBOOTSTRAP_BIN:-bin/op-bootstrap}"
+        if [[ ! -x "$BIN" ]]; then
+          echo "op-bootstrap binary not found at $BIN — run: task build" >&2
+          exit 1
+        fi
+        {{.KEYCHAIN_HELPERS}}
+        load_if_empty OPENPROJECT_ACME_API_KEY "${PREFIX}-openproject-acme-api-key"
+        load_if_empty OPENPROJECT_GLOBEX_API_KEY "${PREFIX}-openproject-globex-api-key"
+        load_if_empty OPENPROJECT_CLIENT_X_API_KEY "${PREFIX}-openproject-client-x-api-key"
+        exec "$BIN" {{.CLI_ARGS}}

@@ -1,0 +1,25 @@
+[Unit]
+Description=OpenProject Bridge (GitHub webhooks)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=opbridge
+Group=opbridge
+WorkingDirectory=/opt/openproject-bridge
+EnvironmentFile=-/etc/openproject-bridge/env
+ExecStart=/opt/openproject-bridge/bin/op-bridge -config /etc/openproject-bridge/ecosystem.yaml -log-format json
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+
+# Hardening (adjust as needed)
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/openproject-bridge
+
+[Install]
+WantedBy=multi-user.target
+PASS="$(openssl rand -base64 18)" AUTHELIA_PASSWORD="$PASS" ./scripts/authelia-user.sh add kolkov --email a.kolkov@gmail.com --name 'kolkov' --admin echo "Password: $PASS"

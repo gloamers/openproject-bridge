@@ -1,0 +1,138 @@
+# Generic multi-organization layout
+#
+# Organization = GitHub org + OpenProject parent (permission / board).
+# Product      = one repo / OP child (id; identifier defaults to id).
+#
+# This file shows three patterns:
+#   1. acme     — product family on the shared tracker
+#   2. globex   — second GitHub org, same OpenProject URL (Jira-style)
+#   3. client-x — isolated OpenProject instance (separate domain)
+#
+# Product id may match the parent (acme / acme); the OP identifier must not
+# (identifiers are global per instance, like Jira keys) — hence acme-app.
+#
+# Copy to ecosystem.yaml, set URLs, point *_env at process secrets (never literals).
+#
+# Usage:
+#   op-bootstrap -config configs/ecosystem.yaml -org acme -dry-run
+#   op-bootstrap -config configs/ecosystem.yaml
+#   op-bridge -config configs/ecosystem.yaml
+
+organizations:
+  - id: acme
+    name: Acme
+    openproject:
+      url: https://op.example.com
+      api_key_env: OPENPROJECT_ACME_API_KEY
+      username_env: OPENPROJECT_ACME_USERNAME
+      password_env: OPENPROJECT_ACME_PASSWORD
+    github:
+      org: acme
+      webhook_secret_env: GITHUB_WEBHOOK_SECRET_ACME
+    parent:
+      identifier: acme
+      name: Acme
+      description: |
+        Parent project for the Acme product family.
+        Products map 1:1 to GitHub repositories.
+      public: false
+    defaults:
+      sync:
+        issues: true
+        attach_spec: true
+      status_map:
+        opened: New
+        closed: Closed
+      type_map:
+        bug: Bug
+        enhancement: Feature
+    products:
+      - id: core
+        repo: core
+        name: Core
+        description: "Core library"
+      - id: cli
+        repo: cli
+        name: CLI
+        description: "Command-line tools"
+      - id: web
+        repo: web
+        name: Web
+        description: "Web frontend"
+      - id: acme
+        identifier: acme-app # OP key must differ from parent identifier
+        repo: acme
+        name: Acme App
+        description: "Namesake application (repo acme/acme)"
+
+  - id: globex
+    name: Globex
+    openproject:
+      url: https://op.example.com
+      api_key_env: OPENPROJECT_GLOBEX_API_KEY
+      username_env: OPENPROJECT_GLOBEX_USERNAME
+      password_env: OPENPROJECT_GLOBEX_PASSWORD
+    github:
+      org: globex
+      webhook_secret_env: GITHUB_WEBHOOK_SECRET_GLOBEX
+    parent:
+      identifier: globex
+      name: Globex
+      description: |
+        Second permission boundary on the same OpenProject instance.
+        GitHub org is independent; webhook secret is separate.
+      public: false
+    defaults:
+      sync:
+        issues: true
+        attach_spec: true
+      status_map:
+        opened: New
+        closed: Closed
+    products:
+      - id: platform
+        repo: platform
+        name: Platform
+        description: "Globex platform"
+
+  - id: client-x
+    name: Client X
+    openproject:
+      url: https://op-client-x.example.com
+      api_key_env: OPENPROJECT_CLIENT_X_API_KEY
+      username_env: OPENPROJECT_CLIENT_X_USERNAME
+      password_env: OPENPROJECT_CLIENT_X_PASSWORD
+    github:
+      org: client-x-private
+      webhook_secret_env: GITHUB_WEBHOOK_SECRET_CLIENT_X
+    parent:
+      identifier: client-x
+      name: Client X
+      description: "Confidential workspace — separate OpenProject domain."
+      public: false
+    defaults:
+      sync:
+        issues: true
+        attach_spec: true
+    products:
+      - id: product-a
+        name: Product A
+        description: "Client product A"
+        # repo: product-a
+        sync:
+          issues: true
+          attach_spec: true
+
+bridge:
+  webhook:
+    listen: ":8443"
+    path: /webhooks/github
+    # Fallback secret; prefer per-org github.webhook_secret_env
+    secret_env: GITHUB_WEBHOOK_SECRET
+    max_body_bytes: 1048576
+    # async = 202 + background worker (GitHub wants <10s)
+    ack_mode: async
+  mapping_db: ./data/mappings.sqlite
+  labels:
+    documented: documented
+    tracked: op-tracked

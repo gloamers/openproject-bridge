@@ -1,0 +1,23 @@
+# Example docker compose for op-bridge (single multi-org process).
+services:
+  op-bridge:
+    image: golang:1.26
+    working_dir: /app
+    volumes:
+      - ../:/app
+      - bridge-data:/data
+    environment:
+      OPENPROJECT_ACME_API_KEY: ${OPENPROJECT_ACME_API_KEY}
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+    command: >
+      go run ./cmd/op-bridge
+      -config /app/configs/ecosystem.yaml
+      -listen :8443
+      -mapping-db /data/mappings.sqlite
+      -log-format json
+    ports:
+      - "8443:8443"
+
+volumes:
+  bridge-data:
