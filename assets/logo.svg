@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="OpenProject Bridge">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0f2744"/>
+      <stop offset="100%" stop-color="#163a5f"/>
+    </linearGradient>
+    <linearGradient id="arc" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0%" stop-color="#3d8bfd"/>
+      <stop offset="100%" stop-color="#7ee0c8"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="28" fill="url(#bg)"/>
+  <circle cx="32" cy="78" r="10" fill="#3d8bfd"/>
+  <circle cx="96" cy="78" r="10" fill="#7ee0c8"/>
+  <path d="M32 78 C48 28, 80 28, 96 78" fill="none" stroke="url(#arc)" stroke-width="8" stroke-linecap="round"/>
+  <rect x="28" y="90" width="72" height="6" rx="3" fill="#1e4d7a"/>
+</svg>

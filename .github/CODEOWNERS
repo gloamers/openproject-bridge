@@ -1,0 +1,11 @@
+# CODEOWNERS — requested on every PR.
+# https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+* @lkmavi
+
+/.github/ @lkmavi
+*.md @lkmavi
+/internal/webhook/ @lkmavi
+/internal/sync/ @lkmavi
+/internal/storage/ @lkmavi
+/cmd/ @lkmavi

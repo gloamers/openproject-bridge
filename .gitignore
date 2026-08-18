@@ -1,0 +1,33 @@
+# Binaries / build
+bin/
+*.exe
+*.test
+*.out
+
+# Coverage / profiling
+coverage.txt
+coverage*.txt
+coverage.out
+*.prof
+*.pprof
+
+# Temporary / local data
+tmp/
+data/
+*.sqlite
+*.sqlite-journal
+*.db
+
+# Vendor (if reintroduced locally)
+vendor/
+
+# Secrets / local configs
+.env
+.env.*
+!.env.example
+configs/ecosystem.yaml
+configs/*.local.yaml
+
+# IDEs (also in the user global exclude; listed here for clones without it)
+.idea/
+.vscode/
